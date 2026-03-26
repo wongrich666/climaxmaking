@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Golden Opening 剧本首场改写器</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main class="page-shell">
+    <section class="hero-card">
+        <p class="eyebrow">Golden Opening / 本地剧本工具</p>
+        <h1>只动每集第一场，把开篇拽进观众眼睛里</h1>
+        <p class="hero-copy">
+            参考多阶段剧本项目的处理思路，但这里我们只做一件事：上传结构化 txt，识别“第1集 / 第2集”，每集只改写第一个场景，
+            强化冲突、羞辱、危机与压迫感，同时尽量不改剧情事实。
+        </p>
+
+        <div class="note-grid">
+            <article>
+                <h2>输入格式</h2>
+                <p>支持包含标题、故事梗概、人物小传、核心场景、剧本正文的结构化剧本。</p>
+            </article>
+            <article>
+                <h2>处理方式</h2>
+                <p>系统按“第X集”切分，再识别每集首场，逐集调用一次模型，只替换首场内容。</p>
+            </article>
+            <article>
+                <h2>输出结果</h2>
+                <p>前置部分原样保留，只更新剧本正文，页面展示全文，并支持用标题名下载 txt。</p>
+            </article>
+        </div>
+    </section>
+
+    <section class="workbench-card">
+        <form id="rewrite-form" class="upload-form">
+            <label class="field">
+                <span>选择剧本文件</span>
+                <input id="script-file" name="script_file" type="file" accept=".txt,text/plain" required>
+            </label>
+
+            <label class="field">
+                <span>模型渠道</span>
+                <select id="provider" name="provider">
+                    {% for item in providers %}
+                    <option value="{{ item.value }}" {% if item.value == default_provider %}selected{% endif %}>
+                        {{ item.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <div class="actions">
+                <button id="submit-button" type="submit">开始改写首场</button>
+                <p id="status-text" class="status-text">准备就绪，默认使用 {{ default_provider }}。</p>
+            </div>
+        </form>
+    </section>
+
+    <section class="result-card">
+        <div class="result-header">
+            <div>
+                <p class="eyebrow">输出全文</p>
+                <h2 id="result-title">还没有处理结果</h2>
+            </div>
+            <div class="result-actions">
+                <span id="result-meta" class="meta-pill">等待上传</span>
+                <button id="download-button" type="button" disabled>下载 txt</button>
+            </div>
+        </div>
+        <textarea id="result-content" placeholder="处理完成后，完整剧本会显示在这里。"></textarea>
+    </section>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

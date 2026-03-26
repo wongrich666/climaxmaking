@@ -1,0 +1,229 @@
+:root {
+    --bg-top: #f6e8d7;
+    --bg-bottom: #efd0b2;
+    --card: rgba(255, 249, 241, 0.9);
+    --line: rgba(93, 49, 22, 0.12);
+    --text: #2e1a10;
+    --muted: #705141;
+    --accent: #8a1c12;
+    --accent-strong: #68110a;
+    --accent-soft: #ffe2d4;
+    --shadow: 0 24px 60px rgba(77, 33, 14, 0.12);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    background:
+        radial-gradient(circle at top left, rgba(255, 241, 220, 0.9), transparent 36%),
+        linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(138, 28, 18, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(138, 28, 18, 0.04) 1px, transparent 1px);
+    background-size: 32px 32px;
+    pointer-events: none;
+}
+
+.page-shell {
+    width: min(1120px, calc(100vw - 32px));
+    margin: 36px auto;
+    display: grid;
+    gap: 22px;
+    position: relative;
+    z-index: 1;
+}
+
+.hero-card,
+.workbench-card,
+.result-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 26px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+}
+
+.hero-card {
+    padding: 30px;
+}
+
+.eyebrow {
+    margin: 0 0 12px;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+h1,
+h2 {
+    margin: 0;
+    font-family: "STSong", "Songti SC", "SimSun", serif;
+    line-height: 1.15;
+}
+
+h1 {
+    font-size: clamp(32px, 4vw, 54px);
+    max-width: 14ch;
+}
+
+.hero-copy {
+    max-width: 860px;
+    margin: 18px 0 0;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.8;
+}
+
+.note-grid {
+    margin-top: 28px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.note-grid article {
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.48);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+}
+
+.note-grid h2 {
+    font-size: 20px;
+    margin-bottom: 10px;
+}
+
+.note-grid p {
+    margin: 0;
+    line-height: 1.7;
+    color: var(--muted);
+}
+
+.workbench-card,
+.result-card {
+    padding: 26px;
+}
+
+.upload-form {
+    display: grid;
+    gap: 18px;
+}
+
+.field {
+    display: grid;
+    gap: 10px;
+}
+
+.field span {
+    font-weight: 700;
+}
+
+input[type="file"],
+select,
+textarea {
+    width: 100%;
+    border: 1px solid rgba(95, 53, 28, 0.18);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.84);
+    color: var(--text);
+    font-size: 15px;
+}
+
+input[type="file"],
+select {
+    min-height: 52px;
+    padding: 12px 14px;
+}
+
+textarea {
+    min-height: 520px;
+    resize: vertical;
+    padding: 18px;
+    line-height: 1.75;
+}
+
+.actions,
+.result-actions,
+.result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+button {
+    border: 0;
+    border-radius: 999px;
+    padding: 14px 24px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    color: #fff9f5;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 14px 28px rgba(104, 17, 10, 0.2);
+}
+
+button:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.status-text {
+    margin: 0;
+    color: var(--muted);
+}
+
+.meta-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+@media (max-width: 860px) {
+    .page-shell {
+        width: min(100vw - 20px, 1120px);
+        margin: 20px auto;
+    }
+
+    .hero-card,
+    .workbench-card,
+    .result-card {
+        padding: 20px;
+        border-radius: 22px;
+    }
+
+    .note-grid {
+        grid-template-columns: 1fr;
+    }
+
+    textarea {
+        min-height: 420px;
+    }
+}
