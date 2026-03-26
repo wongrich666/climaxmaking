@@ -8,6 +8,9 @@ BODY_MARKER_PATTERN = re.compile(r"(?m)^·?\s*剧本正文\s*[：:]?\s*$")
 SECTION_MARKER_PATTERN = re.compile(
     r"(?m)^·\s*(故事梗概|人物小传|核心场景|剧本正文)\s*[：:]?\s*$"
 )
+ACT_HEADER_PATTERN = re.compile(
+    r"(?m)^\s*(?:第(?:[0-9０-９]+|[一二三四五六七八九十百千万零两]+)\s*幕|序幕|终幕|尾声)(?:\s*[：:]\s*.*)?\s*$"
+)
 EPISODE_HEADER_PATTERN = re.compile(
     r"(?m)^(?P<header>\s*第(?:[0-9０-９]+|[一二三四五六七八九十百千万零两]+)\s*集(?:\s*[：:]\s*.*)?\s*)$"
 )
@@ -108,13 +111,21 @@ def split_into_episodes(body_text: str) -> tuple[str, list[EpisodeBlock]]:
     matches = list(EPISODE_HEADER_PATTERN.finditer(body_text))
     if not matches:
         return body_text, []
-    body_prefix = body_text[: matches[0].start()]
+    body_prefix = clean_body_prefix(body_text[: matches[0].start()])
     episodes: list[EpisodeBlock] = []
     for index, match in enumerate(matches):
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body_text)
         episodes.append(EpisodeBlock(heading=match.group("header"), content=body_text[start:end]))
     return body_prefix, episodes
+
+
+def clean_body_prefix(body_prefix: str) -> str:
+    cleaned = ACT_HEADER_PATTERN.sub("", body_prefix)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if cleaned.strip():
+        return cleaned
+    return "\n" if body_prefix else ""
 
 
 def split_first_scene(content: str) -> SceneSplit:

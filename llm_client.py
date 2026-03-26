@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from typing import Any
 
 import requests
 
 from config import Settings
+
+
+logger = logging.getLogger("golden_opening.llm")
 
 
 class LLMClient:
@@ -19,22 +24,47 @@ class LLMClient:
         user_prompt: str,
         temperature: float = 0.85,
         max_tokens: int = 2400,
+        purpose: str = "模型调用",
     ) -> str:
         provider = self.settings.get_provider(provider_name)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        if provider.name == "ollama":
-            return self._chat_ollama(provider.host, provider.model, messages, temperature)
-        return self._chat_openai_compatible(
-            provider.host,
+        started_at = perf_counter()
+        logger.info(
+            "开始%s provider=%s model=%s host=%s prompt_chars=%s",
+            purpose,
+            provider.name,
             provider.model,
-            provider.api_key,
-            messages,
-            temperature,
-            max_tokens,
+            provider.host,
+            len(system_prompt) + len(user_prompt),
         )
+        try:
+            if provider.name == "ollama":
+                content = self._chat_ollama(provider.host, provider.model, messages, temperature)
+            else:
+                content = self._chat_openai_compatible(
+                    provider.host,
+                    provider.model,
+                    provider.api_key,
+                    messages,
+                    temperature,
+                    max_tokens,
+                )
+        except Exception:
+            logger.exception("失败%s provider=%s model=%s", purpose, provider.name, provider.model)
+            raise
+
+        logger.info(
+            "完成%s provider=%s model=%s elapsed_ms=%s output_chars=%s",
+            purpose,
+            provider.name,
+            provider.model,
+            int((perf_counter() - started_at) * 1000),
+            len(content),
+        )
+        return content
 
     def _chat_ollama(
         self,
@@ -113,7 +143,11 @@ class LLMClient:
         try:
             data = response.json()
             if isinstance(data, dict):
-                message = data.get("error", {}).get("message") or data.get("message") or message
+                error_data = data.get("error")
+                if isinstance(error_data, dict):
+                    message = error_data.get("message") or message
+                else:
+                    message = data.get("message") or message
         except ValueError:
             pass
         raise RuntimeError(f"模型调用失败（HTTP {response.status_code}）：{message}")

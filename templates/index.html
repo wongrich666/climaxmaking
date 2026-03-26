@@ -33,7 +33,7 @@
     </section>
 
     <section class="workbench-card">
-        <form id="rewrite-form" class="upload-form">
+        <form id="rewrite-form" class="upload-form" action="/api/process" method="post" enctype="multipart/form-data">
             <label class="field">
                 <span>选择剧本文件</span>
                 <input id="script-file" name="script_file" type="file" accept=".txt,text/plain" required>
@@ -55,6 +55,14 @@
                 <p id="status-text" class="status-text">准备就绪，默认使用 {{ default_provider }}。</p>
             </div>
         </form>
+
+        <div class="debug-panel">
+            <div class="debug-header">
+                <p class="eyebrow">请求诊断</p>
+                <span id="request-state" class="meta-pill">等待提交</span>
+            </div>
+            <pre id="diagnostic-output">页面已加载，等待上传并提交。</pre>
+        </div>
     </section>
 
     <section class="result-card">
@@ -65,7 +73,20 @@
             </div>
             <div class="result-actions">
                 <span id="result-meta" class="meta-pill">等待上传</span>
+                <button id="copy-button" type="button" disabled>复制全文</button>
                 <button id="download-button" type="button" disabled>下载 txt</button>
+            </div>
+        </div>
+        <div class="audit-panel">
+            <div class="audit-summary-row">
+                <p class="eyebrow">审核结果</p>
+                <span id="audit-summary" class="meta-pill">暂无审核</span>
+            </div>
+            <div id="audit-list" class="audit-list">
+                <article class="audit-item muted">
+                    <h3>还没有处理任何剧本</h3>
+                    <p>每集首场的长度审核、剧情一致性审核和回退情况会显示在这里。</p>
+                </article>
             </div>
         </div>
         <textarea id="result-content" placeholder="处理完成后，完整剧本会显示在这里。"></textarea>

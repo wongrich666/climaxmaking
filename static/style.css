@@ -194,6 +194,100 @@ button:disabled {
     color: var(--muted);
 }
 
+.debug-panel,
+.audit-panel {
+    margin-top: 18px;
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.48);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+}
+
+.debug-header,
+.audit-summary-row,
+.audit-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+#diagnostic-output {
+    margin: 10px 0 0;
+    min-height: 110px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(95, 53, 28, 0.12);
+    background: rgba(44, 23, 14, 0.92);
+    color: #ffe8d9;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
+.audit-list {
+    margin-top: 12px;
+    display: grid;
+    gap: 12px;
+}
+
+.audit-item {
+    padding: 14px 16px;
+    border-radius: 16px;
+    border: 1px solid rgba(95, 53, 28, 0.12);
+    background: rgba(255, 255, 255, 0.7);
+}
+
+.audit-item h3 {
+    margin: 0;
+    font-size: 18px;
+    font-family: "STSong", "Songti SC", "SimSun", serif;
+}
+
+.audit-item p {
+    margin: 8px 0 0;
+    color: var(--muted);
+    line-height: 1.7;
+}
+
+.audit-item.muted {
+    opacity: 0.82;
+}
+
+.audit-item.fallback {
+    border-color: rgba(138, 28, 18, 0.24);
+    background: rgba(255, 232, 220, 0.82);
+}
+
+.audit-tag {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.verdict-pass {
+    background: rgba(21, 128, 61, 0.14);
+    color: #166534;
+}
+
+.verdict-warn {
+    background: rgba(217, 119, 6, 0.14);
+    color: #b45309;
+}
+
+.verdict-fail {
+    background: rgba(185, 28, 28, 0.14);
+    color: #b91c1c;
+}
+
 .meta-pill {
     display: inline-flex;
     align-items: center;
