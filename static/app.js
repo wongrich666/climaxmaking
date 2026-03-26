@@ -4,6 +4,7 @@ const submitButton = document.getElementById("submit-button");
 const resultTitle = document.getElementById("result-title");
 const resultMeta = document.getElementById("result-meta");
 const resultContent = document.getElementById("result-content");
+const copyButton = document.getElementById("copy-button");
 const downloadButton = document.getElementById("download-button");
 const diagnosticOutput = document.getElementById("diagnostic-output");
 const requestState = document.getElementById("request-state");
@@ -11,6 +12,9 @@ const auditSummary = document.getElementById("audit-summary");
 const auditList = document.getElementById("audit-list");
 
 let latestFileName = "";
+let activeJobId = "";
+let pollingTimer = null;
+let lastCompletedCount = -1;
 
 function appendDiagnostic(message) {
     if (!diagnosticOutput) {
@@ -28,12 +32,33 @@ function resetDiagnostic(message) {
     diagnosticOutput.textContent = message;
 }
 
+function syncActionButtons() {
+    const hasContent = Boolean(resultContent && resultContent.value);
+    if (copyButton) {
+        copyButton.disabled = !hasContent;
+    }
+    if (downloadButton) {
+        downloadButton.disabled = !hasContent;
+    }
+}
+
 function setBusyState(isBusy) {
-    submitButton.disabled = isBusy;
-    downloadButton.disabled = isBusy || !resultContent.value;
-    if (isBusy) {
+    if (submitButton) {
+        submitButton.disabled = isBusy;
+    }
+    if (isBusy && requestState) {
         requestState.textContent = "请求进行中";
     }
+    syncActionButtons();
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 }
 
 function renderAudits(audits = [], fallbackCount = 0) {
@@ -52,12 +77,13 @@ function renderAudits(audits = [], fallbackCount = 0) {
         return;
     }
 
-    const passCount = audits.filter((item) => !item.fallback_used).length;
+    const passCount = audits.filter((item) => item.verdict === "pass" && !item.fallback_used).length;
     auditSummary.textContent = `通过 ${passCount}/${audits.length} 集 · 回退 ${fallbackCount} 集`;
     auditList.innerHTML = audits.map((item) => {
         const verdictClass = `verdict-${item.verdict}`;
         const hookScore = item.hook_score ?? "-";
         const consistencyScore = item.consistency_score ?? "-";
+        const attemptsUsed = item.attempts_used ?? "-";
         const heading = escapeHtml(item.episode_heading || "");
         const summary = escapeHtml(item.summary || "");
         const tagText = escapeHtml(item.fallback_used ? "已回退" : item.verdict);
@@ -68,7 +94,7 @@ function renderAudits(audits = [], fallbackCount = 0) {
                     <span class="audit-tag ${verdictClass}">${tagText}</span>
                 </div>
                 <p>${summary}</p>
-                <p>字数 ${item.rewritten_length}/${item.original_length}，允许范围 ${item.min_length}-${item.max_length}，Hook ${hookScore}，一致性 ${consistencyScore}</p>
+                <p>字数 ${item.rewritten_length}/${item.original_length}，允许范围 ${item.min_length}-${item.max_length}，Hook ${hookScore}，一致性 ${consistencyScore}，重写 ${attemptsUsed} 次</p>
             </article>
         `;
     }).join("");
@@ -84,13 +110,114 @@ function extractErrorMessage(error) {
     return error.message || "处理失败，请稍后重试。";
 }
 
-function escapeHtml(value) {
-    return String(value)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+function stopPolling() {
+    if (pollingTimer) {
+        clearTimeout(pollingTimer);
+        pollingTimer = null;
+    }
+}
+
+function updateContent(content) {
+    if (!resultContent || typeof content !== "string") {
+        return;
+    }
+    if (resultContent.value === content) {
+        return;
+    }
+    const wasAtBottom = resultContent.scrollHeight - resultContent.scrollTop - resultContent.clientHeight < 24;
+    resultContent.value = content;
+    if (wasAtBottom) {
+        resultContent.scrollTop = resultContent.scrollHeight;
+    }
+    syncActionButtons();
+}
+
+function updateResultHeader(data) {
+    if (resultTitle && data.title) {
+        resultTitle.textContent = data.title;
+    }
+    if (resultMeta) {
+        const progressText = `${data.completed_count || 0}/${data.episode_count || 0} 集`;
+        resultMeta.textContent = `${data.status || "unknown"} · ${progressText} · job ${data.job_id || activeJobId || "-"}`;
+    }
+}
+
+async function fetchJson(url, options = {}) {
+    const mergedHeaders = {
+        Accept: "application/json",
+        ...(options.headers || {}),
+    };
+    const { headers, ...restOptions } = options;
+    const response = await fetch(url, {
+        credentials: "same-origin",
+        ...restOptions,
+        headers: mergedHeaders,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const requestId = response.headers.get("X-Request-Id") || "";
+    if (!contentType.includes("application/json")) {
+        const rawText = await response.text();
+        throw new Error(`服务端返回了非 JSON 内容（HTTP ${response.status}）：${rawText.slice(0, 120)}`);
+    }
+    const data = await response.json();
+    return { response, data, requestId };
+}
+
+async function pollJob(jobId) {
+    try {
+        const { data, requestId } = await fetchJson(`/api/jobs/${jobId}`);
+        if (!data.ok) {
+            throw new Error(data.error || "任务状态查询失败。");
+        }
+
+        latestFileName = data.download_name || latestFileName;
+        updateResultHeader(data);
+        updateContent(data.content || "");
+        renderAudits(data.audits || [], data.fallback_count || 0);
+        syncActionButtons();
+
+        if ((data.completed_count || 0) !== lastCompletedCount) {
+            lastCompletedCount = data.completed_count || 0;
+            appendDiagnostic(`任务进度更新: ${lastCompletedCount}/${data.episode_count || 0} 集，status=${data.status}，request-id=${requestId || "-"}`);
+        }
+
+        if (requestState) {
+            requestState.textContent = `处理中 ${data.completed_count || 0}/${data.episode_count || 0}`;
+        }
+
+        if (data.status === "completed") {
+            stopPolling();
+            setBusyState(false);
+            if (requestState) {
+                requestState.textContent = "任务完成";
+            }
+            statusText.textContent = "全部集数处理完成，结果已保留在文本框与 outputs 目录里。";
+            appendDiagnostic(`任务完成: job=${jobId}，输出文件=${data.partial_output_path || "-"}`);
+            return;
+        }
+
+        if (data.status === "failed") {
+            stopPolling();
+            setBusyState(false);
+            if (requestState) {
+                requestState.textContent = "任务失败";
+            }
+            statusText.textContent = `任务中断，但前面的成果已保留：${data.error || "请查看审核结果和终端日志。"}`;
+            appendDiagnostic(`任务失败: job=${jobId}，已保留部分结果，输出文件=${data.partial_output_path || "-"}`);
+            return;
+        }
+
+        pollingTimer = setTimeout(() => pollJob(jobId), 1000);
+    } catch (error) {
+        stopPolling();
+        setBusyState(false);
+        if (requestState) {
+            requestState.textContent = "轮询失败";
+        }
+        const message = extractErrorMessage(error);
+        statusText.textContent = message;
+        appendDiagnostic(`轮询失败: ${message}`);
+    }
 }
 
 window.addEventListener("error", (event) => {
@@ -112,6 +239,10 @@ if (!form || !statusText || !submitButton || !resultContent) {
 } else {
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        stopPolling();
+        lastCompletedCount = -1;
+        activeJobId = "";
+
         const formData = new FormData(form);
         const file = formData.get("script_file");
         const endpoint = form.getAttribute("action") || "/api/process";
@@ -126,74 +257,90 @@ if (!form || !statusText || !submitButton || !resultContent) {
         resetDiagnostic(`准备发送 POST ${endpoint}`);
         appendDiagnostic(`已选择文件: ${file.name} (${file.size} bytes)`);
         appendDiagnostic(`模型渠道: ${formData.get("provider")}`);
-        statusText.textContent = "正在逐集改写首场，这一步会按集顺序调用模型，请稍等。";
-        resultMeta.textContent = "处理中";
-        requestState.textContent = "POST 已发送";
+        statusText.textContent = "后台任务已启动，系统会逐集处理并实时刷新结果。";
+        resultMeta.textContent = "任务启动中";
+        if (requestState) {
+            requestState.textContent = "POST 已发送";
+        }
 
         try {
-            const response = await fetch(endpoint, {
+            const { response, data, requestId } = await fetchJson(endpoint, {
                 method: "POST",
                 headers: {
-                    Accept: "application/json",
                     "X-Requested-With": "fetch",
                 },
                 body: formData,
-                credentials: "same-origin",
             });
-
-            const contentType = response.headers.get("content-type") || "";
-            const requestId = response.headers.get("X-Request-Id") || "";
-            appendDiagnostic(`收到响应: HTTP ${response.status} content-type=${contentType || "unknown"} request-id=${requestId || "-"}`);
-
-            let data;
-            if (contentType.includes("application/json")) {
-                data = await response.json();
-            } else {
-                const rawText = await response.text();
-                appendDiagnostic(`非 JSON 响应片段: ${rawText.slice(0, 200)}`);
-                throw new Error(`服务端返回了非 JSON 内容（HTTP ${response.status}），请检查 Flask 日志。`);
-            }
+            appendDiagnostic(`收到启动响应: HTTP ${response.status} request-id=${requestId || "-"}`);
 
             if (!response.ok || !data.ok) {
-                throw new Error(data.error || `处理失败，request_id=${data.request_id || requestId || "-"}`);
+                throw new Error(data.error || `启动任务失败，request_id=${data.request_id || requestId || "-"}`);
             }
 
-            latestFileName = data.download_name;
-            resultTitle.textContent = data.title;
-            resultMeta.textContent = `共 ${data.episode_count} 集 · 使用 ${data.provider} · request ${data.request_id}`;
-            resultContent.value = data.content;
-            statusText.textContent = "处理完成，完整剧本已经更新到下方文本框，可直接下载。";
-            downloadButton.disabled = false;
-            requestState.textContent = "请求完成";
-            appendDiagnostic(`后端处理完成: request_id=${data.request_id}，通过 ${data.passed_audit_count} 集，回退 ${data.fallback_count} 集。`);
-            renderAudits(data.audits, data.fallback_count);
+            activeJobId = data.job_id;
+            latestFileName = data.download_name || latestFileName;
+            resultTitle.textContent = data.title || "处理中";
+            resultMeta.textContent = `queued · 0/${data.episode_count || 0} 集 · job ${activeJobId}`;
+            updateContent(data.content || "");
+            renderAudits([], 0);
+            syncActionButtons();
+            appendDiagnostic(`任务已创建: job=${activeJobId}，初始输出=${data.partial_output_path || "-"}`);
+            pollingTimer = setTimeout(() => pollJob(activeJobId), 400);
         } catch (error) {
-            resultMeta.textContent = "处理失败";
-            requestState.textContent = "请求失败";
-            const message = extractErrorMessage(error);
-            statusText.textContent = message;
-            appendDiagnostic(`请求失败: ${message}`);
-        } finally {
             setBusyState(false);
+            if (requestState) {
+                requestState.textContent = "请求失败";
+            }
+            const message = extractErrorMessage(error);
+            resultMeta.textContent = "处理失败";
+            statusText.textContent = message;
+            appendDiagnostic(`启动失败: ${message}`);
         }
     });
 
-    downloadButton.addEventListener("click", () => {
-        const content = resultContent.value;
-        if (!content) {
-            appendDiagnostic("下载中止：结果内容为空。");
-            return;
-        }
+    if (copyButton) {
+        copyButton.addEventListener("click", async () => {
+            const content = resultContent.value;
+            if (!content) {
+                appendDiagnostic("复制中止：结果内容为空。");
+                return;
+            }
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(content);
+                } else {
+                    resultContent.focus();
+                    resultContent.select();
+                    document.execCommand("copy");
+                }
+                appendDiagnostic("已复制当前全文到剪贴板。");
+                statusText.textContent = "当前显示的剧本内容已经复制到剪贴板。";
+            } catch (error) {
+                const message = extractErrorMessage(error);
+                appendDiagnostic(`复制失败: ${message}`);
+                statusText.textContent = `复制失败：${message}`;
+            }
+        });
+    }
 
-        const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = latestFileName || "改写后剧本.txt";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
-        appendDiagnostic(`已触发下载: ${link.download}`);
-    });
+    if (downloadButton) {
+        downloadButton.addEventListener("click", () => {
+            const content = resultContent.value;
+            if (!content) {
+                appendDiagnostic("下载中止：结果内容为空。");
+                return;
+            }
+
+            const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = latestFileName || "改写后剧本.txt";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+            appendDiagnostic(`已触发下载: ${link.download}`);
+        });
+    }
 }

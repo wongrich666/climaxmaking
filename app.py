@@ -12,7 +12,7 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from config import settings
 from job_store import JobStore
 from llm_client import LLMClient
-from rewriter import RewriteResult, RewriteStoppedError, ScriptRewriter
+from rewriter import RewriteResult, ScriptRewriter
 from script_parser import decode_text_file, parse_script
 
 
@@ -249,26 +249,6 @@ def run_rewrite_job(job_id: str, script_text: str, provider_name: str) -> None:
             error="",
         )
         app.logger.info("[job:%s] 后台任务完成", job_id)
-    except RewriteStoppedError as exc:
-        partial = exc.partial_result
-        passed_count, fallback_count = summarize_audits(partial)
-        output_path = persist_output(job_id, partial.download_name, partial.content)
-        jobs.update_job(
-            job_id,
-            status="failed",
-            title=partial.title,
-            provider=partial.provider,
-            episode_count=partial.episode_count,
-            completed_count=partial.completed_count,
-            passed_audit_count=passed_count,
-            fallback_count=fallback_count,
-            download_name=partial.download_name,
-            content=partial.content,
-            audits=[audit.to_dict() for audit in partial.audits],
-            partial_output_path=output_path,
-            error=str(exc),
-        )
-        app.logger.warning("[job:%s] 后台任务失败，但已保留前序成果: %s", job_id, exc)
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("[job:%s] 后台任务异常", job_id)
         jobs.update_job(job_id, status="failed", error=str(exc))

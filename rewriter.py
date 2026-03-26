@@ -118,18 +118,6 @@ class RewriteResult:
     completed_count: int
 
 
-class RewriteStoppedError(RuntimeError):
-    def __init__(self, message: str, partial_result: RewriteResult) -> None:
-        super().__init__(message)
-        self.partial_result = partial_result
-
-
-class EpisodeRetryExhausted(RuntimeError):
-    def __init__(self, message: str, last_audit: EpisodeAudit) -> None:
-        super().__init__(message)
-        self.last_audit = last_audit
-
-
 class ScriptRewriter:
     def __init__(self, llm_client: LLMClient) -> None:
         self.llm_client = llm_client
@@ -148,39 +136,12 @@ class ScriptRewriter:
         audits: list[EpisodeAudit] = []
 
         for index, episode in enumerate(parsed.episodes):
-            try:
-                rewritten_episode, audit = self._rewrite_episode_until_pass(
-                    parsed=parsed,
-                    episode_heading=episode.heading,
-                    episode_content=episode.content,
-                    provider_name=provider_name,
-                )
-            except EpisodeRetryExhausted as exc:
-                failed_audit = EpisodeAudit(
-                    episode_heading=exc.last_audit.episode_heading,
-                    original_length=exc.last_audit.original_length,
-                    rewritten_length=exc.last_audit.rewritten_length,
-                    min_length=exc.last_audit.min_length,
-                    max_length=exc.last_audit.max_length,
-                    length_ok=exc.last_audit.length_ok,
-                    verdict=exc.last_audit.verdict,
-                    hook_score=exc.last_audit.hook_score,
-                    consistency_score=exc.last_audit.consistency_score,
-                    format_ok=exc.last_audit.format_ok,
-                    plot_ok=exc.last_audit.plot_ok,
-                    fallback_used=True,
-                    summary=f"{exc.last_audit.summary}，多次重写仍未通过，已保留原文并中止任务",
-                    attempts_used=exc.last_audit.attempts_used,
-                )
-                failure_result = self._build_result(
-                    parsed=parsed,
-                    provider_name=provider_name,
-                    rewritten_episodes=rewritten_episodes,
-                    audits=audits + [failed_audit],
-                    completed_count=len(rewritten_episodes),
-                    remaining_episodes=parsed.episodes[index:],
-                )
-                raise RewriteStoppedError(str(exc), failure_result) from exc
+            rewritten_episode, audit = self._rewrite_episode_until_pass(
+                parsed=parsed,
+                episode_heading=episode.heading,
+                episode_content=episode.content,
+                provider_name=provider_name,
+            )
 
             rewritten_episodes.append(rewritten_episode)
             audits.append(audit)
@@ -291,8 +252,25 @@ class ScriptRewriter:
             )
 
         if last_audit is None:
-            raise EpisodeRetryExhausted(f"{normalized_heading} 首场改写失败", self._empty_audit(normalized_heading))
-        raise EpisodeRetryExhausted(f"{normalized_heading} 首场在 {MAX_REWRITE_ATTEMPTS} 次重写后仍未通过审核", last_audit)
+            last_audit = self._empty_audit(normalized_heading)
+        skipped_audit = EpisodeAudit(
+            episode_heading=last_audit.episode_heading,
+            original_length=last_audit.original_length,
+            rewritten_length=last_audit.rewritten_length,
+            min_length=last_audit.min_length,
+            max_length=last_audit.max_length,
+            length_ok=last_audit.length_ok,
+            verdict=last_audit.verdict,
+            hook_score=last_audit.hook_score,
+            consistency_score=last_audit.consistency_score,
+            format_ok=last_audit.format_ok,
+            plot_ok=last_audit.plot_ok,
+            fallback_used=True,
+            summary=f"{last_audit.summary}，5 次重写仍未通过，已跳过本集改写并保留原文",
+            attempts_used=last_audit.attempts_used,
+        )
+        logger.warning("%s 首场重写已跳过，继续后续集数", normalized_heading)
+        return f"{episode_heading}{episode_content}", skipped_audit
 
     def _enforce_length_range(
         self,
