@@ -12,7 +12,7 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from config import settings
 from job_store import JobStore
 from llm_client import LLMClient
-from rewriter import RewriteResult, ScriptRewriter
+from rewriter import EpisodeAudit, RewriteResult, ScriptRewriter
 from script_parser import decode_text_file, parse_script
 
 
@@ -33,6 +33,9 @@ rewriter = ScriptRewriter(LLMClient(settings))
 jobs = JobStore()
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+ACTIVE_JOB_STATUSES = {"queued", "running", "pausing"}
+TERMINAL_JOB_STATUSES = {"completed", "failed"}
 
 
 @app.before_request
@@ -124,6 +127,59 @@ def get_job_status(job_id: str):
     return jsonify(payload)
 
 
+@app.post("/api/jobs/<job_id>/pause")
+def pause_job(job_id: str):
+    try:
+        state = jobs.mutate_job(job_id, _mark_pause_requested)
+    except KeyError:
+        return jsonify({"ok": False, "error": "任务不存在。", "request_id": g.request_id}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "request_id": g.request_id}), 409
+    payload = state.to_dict()
+    payload["ok"] = True
+    return jsonify(payload)
+
+
+@app.post("/api/jobs/<job_id>/resume")
+def resume_job(job_id: str):
+    should_spawn_worker = False
+    def apply_resume(current) -> None:
+        nonlocal should_spawn_worker
+        should_spawn_worker = _resume_job_state(current)
+
+    try:
+        state = jobs.mutate_job(job_id, apply_resume)
+    except KeyError:
+        return jsonify({"ok": False, "error": "任务不存在。", "request_id": g.request_id}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "request_id": g.request_id}), 409
+
+    if should_spawn_worker:
+        start_job_worker(job_id, state.run_revision)
+
+    payload = state.to_dict()
+    payload["ok"] = True
+    return jsonify(payload)
+
+
+@app.post("/api/jobs/<job_id>/restart")
+def restart_job(job_id: str):
+    try:
+        state = jobs.mutate_job(job_id, _restart_job_state)
+    except KeyError:
+        return jsonify({"ok": False, "error": "任务不存在。", "request_id": g.request_id}), 404
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "request_id": g.request_id}), 409
+
+    output_path = persist_output(job_id, state.download_name, state.initial_content or state.content)
+    state = jobs.update_job(job_id, partial_output_path=output_path)
+    start_job_worker(job_id, state.run_revision)
+
+    payload = state.to_dict()
+    payload["ok"] = True
+    return jsonify(payload)
+
+
 @app.post("/api/process")
 def process_script():
     app.logger.info("[%s] 进入 /api/process 处理函数", g.request_id)
@@ -168,15 +224,15 @@ def process_script():
         content=initial_content,
         audits=[],
         partial_output_path=initial_output_path,
+        script_text=script_text,
+        initial_content=initial_content,
+        rewritten_episodes=[],
+        pause_requested=False,
+        run_revision=1,
     )
 
-    worker = Thread(
-        target=run_rewrite_job,
-        args=(job_id, script_text, provider_name),
-        daemon=True,
-    )
-    worker.start()
-    app.logger.info("[%s] 已启动后台任务 job_id=%s", g.request_id, job_id)
+    start_job_worker(job_id, run_revision=1)
+    app.logger.info("[%s] 已启动后台任务 job_id=%s revision=%s", g.request_id, job_id, 1)
 
     return (
         jsonify(
@@ -197,16 +253,45 @@ def process_script():
     )
 
 
-def run_rewrite_job(job_id: str, script_text: str, provider_name: str) -> None:
-    jobs.update_job(job_id, status="running")
-    app.logger.info("[job:%s] 后台任务开始", job_id)
+def start_job_worker(job_id: str, run_revision: int) -> None:
+    worker = Thread(
+        target=run_rewrite_job,
+        args=(job_id, run_revision),
+        daemon=True,
+    )
+    worker.start()
+
+
+def run_rewrite_job(job_id: str, run_revision: int) -> None:
+    state = jobs.get_job(job_id)
+    if not state or state.run_revision != run_revision:
+        app.logger.info("[job:%s] 放弃启动过期后台任务 revision=%s", job_id, run_revision)
+        return
+
+    jobs.update_job(
+        job_id,
+        status="pausing" if state.pause_requested else "running",
+        error="",
+    )
+    app.logger.info("[job:%s] 后台任务开始 revision=%s", job_id, run_revision)
+
+    def control_callback() -> str:
+        current = jobs.get_job(job_id)
+        if not current or current.run_revision != run_revision:
+            return "abort"
+        if current.pause_requested:
+            return "pause"
+        return "continue"
 
     def on_progress(snapshot: RewriteResult) -> None:
+        current_state = jobs.get_job(job_id)
+        if not current_state or current_state.run_revision != run_revision:
+            return
         passed_count, fallback_count = summarize_audits(snapshot)
         output_path = persist_output(job_id, snapshot.download_name, snapshot.content)
         jobs.update_job(
             job_id,
-            status="running",
+            status="pausing" if current_state.pause_requested else "running",
             title=snapshot.title,
             provider=snapshot.provider,
             episode_count=snapshot.episode_count,
@@ -217,25 +302,40 @@ def run_rewrite_job(job_id: str, script_text: str, provider_name: str) -> None:
             content=snapshot.content,
             audits=[audit.to_dict() for audit in snapshot.audits],
             partial_output_path=output_path,
+            rewritten_episodes=list(snapshot.rewritten_episodes),
+            error="",
         )
         app.logger.info(
-            "[job:%s] 已完成 %s/%s 集",
+            "[job:%s] 已完成 %s/%s 集 revision=%s",
             job_id,
             snapshot.completed_count,
             snapshot.episode_count,
+            run_revision,
         )
 
     try:
-        result = rewriter.rewrite_script_progressive(
-            script_text,
-            provider_name=provider_name,
+        existing_audits = [EpisodeAudit.from_dict(item) for item in state.audits]
+        outcome = rewriter.rewrite_script_progressive(
+            state.script_text,
+            provider_name=state.provider,
             progress_callback=on_progress,
+            start_episode_index=state.completed_count,
+            existing_rewritten_episodes=state.rewritten_episodes,
+            existing_audits=existing_audits,
+            control_callback=control_callback,
         )
+        latest_state = jobs.get_job(job_id)
+        if not latest_state or latest_state.run_revision != run_revision:
+            app.logger.info("[job:%s] 过期后台任务已停止 revision=%s", job_id, run_revision)
+            return
+
+        result = outcome.result
         passed_count, fallback_count = summarize_audits(result)
         output_path = persist_output(job_id, result.download_name, result.content)
+        final_status = "completed" if outcome.status == "completed" else "paused"
         jobs.update_job(
             job_id,
-            status="completed",
+            status=final_status,
             title=result.title,
             provider=result.provider,
             episode_count=result.episode_count,
@@ -246,12 +346,18 @@ def run_rewrite_job(job_id: str, script_text: str, provider_name: str) -> None:
             content=result.content,
             audits=[audit.to_dict() for audit in result.audits],
             partial_output_path=output_path,
+            rewritten_episodes=list(result.rewritten_episodes),
+            pause_requested=False,
             error="",
         )
-        app.logger.info("[job:%s] 后台任务完成", job_id)
+        app.logger.info("[job:%s] 后台任务结束 status=%s revision=%s", job_id, final_status, run_revision)
     except Exception as exc:  # noqa: BLE001
-        app.logger.exception("[job:%s] 后台任务异常", job_id)
-        jobs.update_job(job_id, status="failed", error=str(exc))
+        latest_state = jobs.get_job(job_id)
+        if not latest_state or latest_state.run_revision != run_revision:
+            app.logger.info("[job:%s] 过期后台任务异常已忽略 revision=%s", job_id, run_revision)
+            return
+        app.logger.exception("[job:%s] 后台任务异常 revision=%s", job_id, run_revision)
+        jobs.update_job(job_id, status="failed", pause_requested=False, error=str(exc))
 
 
 def rebuild_original_script(parsed) -> str:
@@ -270,6 +376,48 @@ def persist_output(job_id: str, download_name: str, content: str) -> str:
     safe_path = OUTPUT_DIR / filename
     safe_path.write_text(content, encoding="utf-8")
     return str(safe_path)
+
+
+def _mark_pause_requested(state) -> None:
+    if state.status in TERMINAL_JOB_STATUSES:
+        raise ValueError("当前任务已经结束，不能暂停。")
+    if state.status == "paused":
+        return
+    state.pause_requested = True
+    if state.status in ACTIVE_JOB_STATUSES:
+        state.status = "pausing"
+
+
+def _resume_job_state(state) -> bool:
+    if state.status == "paused":
+        state.pause_requested = False
+        state.status = "queued"
+        state.run_revision += 1
+        state.error = ""
+        return True
+    if state.status == "pausing":
+        state.pause_requested = False
+        state.status = "running"
+        state.error = ""
+        return False
+    if state.status in {"queued", "running"}:
+        return False
+    raise ValueError("当前任务不在可继续状态。")
+
+
+def _restart_job_state(state) -> None:
+    if not state.script_text:
+        raise ValueError("当前任务缺少原始剧本，无法重新生成。")
+    state.pause_requested = False
+    state.status = "queued"
+    state.completed_count = 0
+    state.passed_audit_count = 0
+    state.fallback_count = 0
+    state.content = state.initial_content
+    state.audits = []
+    state.rewritten_episodes = []
+    state.error = ""
+    state.run_revision += 1
 
 
 if __name__ == "__main__":

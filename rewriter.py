@@ -106,6 +106,25 @@ class EpisodeAudit:
             "attempts_used": self.attempts_used,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "EpisodeAudit":
+        return cls(
+            episode_heading=str(data.get("episode_heading") or ""),
+            original_length=int(data.get("original_length") or 0),
+            rewritten_length=int(data.get("rewritten_length") or 0),
+            min_length=int(data.get("min_length") or 0),
+            max_length=int(data.get("max_length") or 0),
+            length_ok=bool(data.get("length_ok")),
+            verdict=str(data.get("verdict") or "warn"),
+            hook_score=clamp_score(data.get("hook_score")),
+            consistency_score=clamp_score(data.get("consistency_score")),
+            format_ok=to_bool(data.get("format_ok"), default=True),
+            plot_ok=to_bool(data.get("plot_ok"), default=True),
+            fallback_used=bool(data.get("fallback_used")),
+            summary=str(data.get("summary") or ""),
+            attempts_used=int(data.get("attempts_used") or 0),
+        )
+
 
 @dataclass(frozen=True)
 class RewriteResult:
@@ -116,6 +135,21 @@ class RewriteResult:
     provider: str
     audits: list[EpisodeAudit]
     completed_count: int
+    rewritten_episodes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RewriteProgressOutcome:
+    status: str
+    result: RewriteResult
+
+
+class RewritePaused(Exception):
+    pass
+
+
+class RewriteAborted(Exception):
+    pass
 
 
 class ScriptRewriter:
@@ -123,46 +157,85 @@ class ScriptRewriter:
         self.llm_client = llm_client
 
     def rewrite_script(self, script_text: str, provider_name: str) -> RewriteResult:
-        return self.rewrite_script_progressive(script_text, provider_name, progress_callback=None)
+        outcome = self.rewrite_script_progressive(script_text, provider_name, progress_callback=None)
+        return outcome.result
 
     def rewrite_script_progressive(
         self,
         script_text: str,
         provider_name: str,
         progress_callback: Callable[[RewriteResult], None] | None,
-    ) -> RewriteResult:
+        start_episode_index: int = 0,
+        existing_rewritten_episodes: list[str] | None = None,
+        existing_audits: list[EpisodeAudit] | None = None,
+        control_callback: Callable[[], str] | None = None,
+    ) -> RewriteProgressOutcome:
         parsed = parse_script(script_text)
-        rewritten_episodes: list[str] = []
-        audits: list[EpisodeAudit] = []
+        rewritten_episodes = list(existing_rewritten_episodes or [])
+        audits = list(existing_audits or [])
+        next_episode_index = start_episode_index
 
-        for index, episode in enumerate(parsed.episodes):
-            rewritten_episode, audit = self._rewrite_episode_until_pass(
-                parsed=parsed,
-                episode_heading=episode.heading,
-                episode_content=episode.content,
-                provider_name=provider_name,
+        try:
+            for index in range(start_episode_index, len(parsed.episodes)):
+                next_episode_index = index
+                self._check_control(control_callback)
+                episode = parsed.episodes[index]
+                rewritten_episode, audit = self._rewrite_episode_until_pass(
+                    parsed=parsed,
+                    episode_heading=episode.heading,
+                    episode_content=episode.content,
+                    provider_name=provider_name,
+                    control_callback=control_callback,
+                )
+
+                rewritten_episodes.append(rewritten_episode)
+                audits.append(audit)
+                next_episode_index = index + 1
+                snapshot = self._build_result(
+                    parsed=parsed,
+                    provider_name=provider_name,
+                    rewritten_episodes=rewritten_episodes,
+                    audits=audits,
+                    completed_count=len(rewritten_episodes),
+                    remaining_episodes=parsed.episodes[index + 1 :],
+                )
+                if progress_callback:
+                    progress_callback(snapshot)
+        except RewritePaused:
+            return RewriteProgressOutcome(
+                status="paused",
+                result=self._build_result(
+                    parsed=parsed,
+                    provider_name=provider_name,
+                    rewritten_episodes=rewritten_episodes,
+                    audits=audits,
+                    completed_count=len(rewritten_episodes),
+                    remaining_episodes=parsed.episodes[next_episode_index:],
+                ),
+            )
+        except RewriteAborted:
+            return RewriteProgressOutcome(
+                status="aborted",
+                result=self._build_result(
+                    parsed=parsed,
+                    provider_name=provider_name,
+                    rewritten_episodes=rewritten_episodes,
+                    audits=audits,
+                    completed_count=len(rewritten_episodes),
+                    remaining_episodes=parsed.episodes[next_episode_index:],
+                ),
             )
 
-            rewritten_episodes.append(rewritten_episode)
-            audits.append(audit)
-            snapshot = self._build_result(
+        return RewriteProgressOutcome(
+            status="completed",
+            result=self._build_result(
                 parsed=parsed,
                 provider_name=provider_name,
                 rewritten_episodes=rewritten_episodes,
                 audits=audits,
                 completed_count=len(rewritten_episodes),
-                remaining_episodes=parsed.episodes[index + 1 :],
-            )
-            if progress_callback:
-                progress_callback(snapshot)
-
-        return self._build_result(
-            parsed=parsed,
-            provider_name=provider_name,
-            rewritten_episodes=rewritten_episodes,
-            audits=audits,
-            completed_count=len(rewritten_episodes),
-            remaining_episodes=[],
+                remaining_episodes=[],
+            ),
         )
 
     def _rewrite_episode_until_pass(
@@ -171,6 +244,7 @@ class ScriptRewriter:
         episode_heading: str,
         episode_content: str,
         provider_name: str,
+        control_callback: Callable[[], str] | None,
     ) -> tuple[str, EpisodeAudit]:
         scene_split = split_first_scene(episode_content)
         normalized_heading = episode_heading.strip()
@@ -198,6 +272,7 @@ class ScriptRewriter:
         last_audit: EpisodeAudit | None = None
 
         for attempt in range(1, MAX_REWRITE_ATTEMPTS + 1):
+            self._check_control(control_callback)
             user_prompt = self._build_user_prompt(
                 parsed=parsed,
                 episode_heading=normalized_heading,
@@ -215,6 +290,7 @@ class ScriptRewriter:
                 user_prompt=user_prompt,
                 purpose=f"{normalized_heading} 首场改写（第{attempt}次）",
             )
+            self._check_control(control_callback)
             candidate_scene = self._normalize_scene_output(original_scene, rewritten_scene)
             candidate_scene, original_length, candidate_length, min_length, max_length = (
                 self._enforce_length_range(
@@ -222,6 +298,7 @@ class ScriptRewriter:
                     rewritten_scene=candidate_scene,
                     provider_name=provider_name,
                     episode_heading=normalized_heading,
+                    control_callback=control_callback,
                 )
             )
 
@@ -235,6 +312,7 @@ class ScriptRewriter:
                 min_length=min_length,
                 max_length=max_length,
                 attempts_used=attempt,
+                control_callback=control_callback,
             )
             last_audit = audit
             if self._qualifies_as_pass(audit):
@@ -278,6 +356,7 @@ class ScriptRewriter:
         rewritten_scene: str,
         provider_name: str,
         episode_heading: str,
+        control_callback: Callable[[], str] | None = None,
     ) -> tuple[str, int, int, int, int]:
         original_length = count_visible_chars(original_scene)
         min_length, max_length = scene_length_range(original_length)
@@ -285,6 +364,7 @@ class ScriptRewriter:
         if min_length <= rewritten_length <= max_length:
             return rewritten_scene, original_length, rewritten_length, min_length, max_length
 
+        self._check_control(control_callback)
         direction = "压缩" if rewritten_length > max_length else "扩写"
         logger.warning(
             "%s 首场字数超出限制，准备二次修正: original=%s rewritten=%s range=%s-%s",
@@ -320,6 +400,7 @@ class ScriptRewriter:
 请输出修正后的完整场景，必须保留原格式，并把字数控制在范围内。""",
             purpose=f"{episode_heading} 长度修正",
         )
+        self._check_control(control_callback)
         normalized_fixed_scene = self._normalize_scene_output(original_scene, fixed_scene)
         fixed_length = count_visible_chars(normalized_fixed_scene)
         return normalized_fixed_scene, original_length, fixed_length, min_length, max_length
@@ -335,9 +416,11 @@ class ScriptRewriter:
         min_length: int,
         max_length: int,
         attempts_used: int,
+        control_callback: Callable[[], str] | None = None,
     ) -> EpisodeAudit:
         length_ok = min_length <= rewritten_length <= max_length
         try:
+            self._check_control(control_callback)
             raw_audit = self.llm_client.chat(
                 provider_name=provider_name,
                 system_prompt=AUDIT_SYSTEM_PROMPT,
@@ -369,6 +452,8 @@ class ScriptRewriter:
             format_ok = to_bool(parsed_audit.get("format_ok"), default=True)
             plot_ok = to_bool(parsed_audit.get("plot_ok"), default=True)
             summary = str(parsed_audit.get("summary") or "审核完成").strip()
+        except (RewritePaused, RewriteAborted):
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("%s 首场审核失败", episode_heading)
             verdict = "warn"
@@ -458,6 +543,7 @@ class ScriptRewriter:
             provider=provider_name,
             audits=audits,
             completed_count=completed_count,
+            rewritten_episodes=tuple(rewritten_episodes),
         )
 
     @staticmethod
@@ -534,6 +620,16 @@ class ScriptRewriter:
             summary="未生成有效审核结果",
             attempts_used=MAX_REWRITE_ATTEMPTS,
         )
+
+    @staticmethod
+    def _check_control(control_callback: Callable[[], str] | None) -> None:
+        if not control_callback:
+            return
+        action = control_callback()
+        if action == "pause":
+            raise RewritePaused()
+        if action == "abort":
+            raise RewriteAborted()
 
 
 def count_visible_chars(text: str) -> int:

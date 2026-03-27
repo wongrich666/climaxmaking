@@ -10,7 +10,7 @@
 <main class="page-shell">
     <section class="hero-card">
         <p class="eyebrow">Golden Opening / 本地剧本工具</p>
-        <h1>只动每集第一场，把开篇拽进观众眼睛里</h1>
+        <h1>开篇即爆！黄金七秒！</h1>
         <p class="hero-copy">
             参考多阶段剧本项目的处理思路，但这里我们只做一件事：上传结构化 txt，识别“第1集 / 第2集”，每集只改写第一个场景，
             强化冲突、羞辱、危机与压迫感，同时尽量不改剧情事实。
@@ -51,7 +51,12 @@
             </label>
 
             <div class="actions">
-                <button id="submit-button" type="submit">开始改写首场</button>
+                <div class="primary-actions">
+                    <button id="start-button" type="submit">开始生成</button>
+                    <button id="pause-button" type="button" class="button-secondary" disabled>暂停生成</button>
+                    <button id="resume-button" type="button" class="button-success" disabled>继续任务</button>
+                    <button id="restart-button" type="button" class="button-ghost" disabled>全部重新生成</button>
+                </div>
                 <p id="status-text" class="status-text">准备就绪，默认使用 {{ default_provider }}。</p>
             </div>
         </form>

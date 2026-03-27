@@ -4,9 +4,9 @@ import re
 from dataclasses import dataclass
 
 
-BODY_MARKER_PATTERN = re.compile(r"(?m)^·?\s*剧本正文\s*[：:]?\s*$")
+BODY_MARKER_PATTERN = re.compile(r"(?m)^\s*剧本正文\s*[：:]?\s*$")
 SECTION_MARKER_PATTERN = re.compile(
-    r"(?m)^·\s*(故事梗概|人物小传|核心场景|剧本正文)\s*[：:]?\s*$"
+    r"(?m)^\s*(故事梗概|人物小传|核心场景|剧本正文)\s*[：:]?\s*$"
 )
 NON_WHITESPACE_PATTERN = re.compile(r"\s+", re.MULTILINE)
 ACT_HEADER_PATTERN = re.compile(
@@ -104,7 +104,7 @@ def extract_title(text: str) -> str:
 def split_body(text: str) -> tuple[str, str]:
     match = BODY_MARKER_PATTERN.search(text)
     if not match:
-        raise ValueError("没有识别到“·剧本正文”字段，请检查输入格式。")
+        raise ValueError("没有识别到“剧本正文”字段，请检查输入格式。")
     return text[: match.end()], text[match.end() :]
 
 

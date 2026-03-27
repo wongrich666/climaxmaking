@@ -21,6 +21,11 @@ class JobState:
     audits: list[dict[str, Any]] = field(default_factory=list)
     error: str = ""
     partial_output_path: str = ""
+    script_text: str = ""
+    initial_content: str = ""
+    rewritten_episodes: list[str] = field(default_factory=list)
+    pause_requested: bool = False
+    run_revision: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -69,6 +74,15 @@ class JobStore:
             state = self._jobs.get(job_id)
             return self._clone(state) if state else None
 
+    def mutate_job(self, job_id: str, mutator) -> JobState:
+        with self._lock:
+            if job_id not in self._jobs:
+                raise KeyError(f"job not found: {job_id}")
+            state = self._jobs[job_id]
+            mutator(state)
+            state.updated_at = time.time()
+            return self._clone(state)
+
     @staticmethod
     def _apply_fields(state: JobState, fields: dict[str, Any]) -> None:
         for key, value in fields.items():
@@ -93,6 +107,11 @@ class JobStore:
             audits=list(state.audits),
             error=state.error,
             partial_output_path=state.partial_output_path,
+            script_text=state.script_text,
+            initial_content=state.initial_content,
+            rewritten_episodes=list(state.rewritten_episodes),
+            pause_requested=state.pause_requested,
+            run_revision=state.run_revision,
             created_at=state.created_at,
             updated_at=state.updated_at,
         )
